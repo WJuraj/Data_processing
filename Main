@@ -1,0 +1,1149 @@
+
+Option Explicit  'Forces the explicit declaration of all the variables in a script.
+
+'-------------------------------------------------------------------------------
+'-- VBS script file
+'-- Created on 09/11/2017 08:05:24
+'-- Author: Juraj Wolf
+'-- Comment: Purpose of this makro is post-processing of data from KCTC test.
+'--          Please do not hestite to contact me in case of any error.
+'-------------------------------------------------------------------------------
+'-------------------------- SETTINGS AND DELETING THE NOISE
+call introduction()
+
+call clear_data()                                         ' Delete the noise at the end and front of recotf and blackouts of the servo caused by buffer.
+
+Call Data.Root.Clear()              
+call raw_data_back_up()                                   ' Moves the .tdms files from input folder to harddrive E: where all raw data are stored.                   
+
+'--------------------------------------
+'-- VBS script file
+'-- Created on 09/30/2016 11:33:05
+'-- Author: Radim Mrazek, Jaroslav Krejcí ---
+'-- Comment: KCTC test files batch processing ---
+'-------------------------------------------------------------------------------
+'-------------------------- DATA PROCESSING 
+Call Main()                                              ' Core of the proccesing 
+'------------------------------------
+'-- VBS script file
+'-- Created on 09/07/2017 16:38:17
+'-- Comment: Purpose of this makro is post-processing of data from KCTC test.
+'--          Please do not hestite to contact me in case of any error.
+'-------------------------------------------------------------------------------
+'-------------------------- CALCULATION
+dim  group_index
+
+call load_proccesed_data()                              ' Load the proccessed data    
+call set_average_parameters()                           ' Calculation average values
+for group_index=1 to GroupCount '
+
+  call calculate_Wear(group_index)                      ' Wear calculation
+  call calculate_Spring_Force_Range(group_index)        ' Calculation of the spirng force range channel
+  call calculate_Rod_Force_Range(group_index)           ' Calculation of the rod force range channel
+  call calculate_Hysteresis(group_index)                ' Calculation of Force hysteresis
+  call calculate_average_forces(group_index)            ' Calculation of average rod ans spring force 
+   
+next
+
+call load_test_condition()                              ' Load test condition record .lvm
+call create_csv_file()                                  ' Create a .csv for database "Time" "Wear" "Force" -> X_COMH 	WEAR	LC1_SMOOTH
+'-------------------------- REPORT
+call create_report()                                    ' Creating a report 
+call move_leftover_files()                              ' Move all file from input folder to harddrive E: where all raw data are stored (.lvm and all other files)
+
+Call SUDDlgShow("Done","Done.SUD")                      ' Present the results 
+Call ExtProgram("",T5&"\"&T1)                           ' Opens the folder with results
+
+'-------------------------- SUBS AND FUNCTION
+'-------------------------- SETTINGS AND DELETING THE NOISE
+'------------------------------------------------------- Subs and function that adjust the settings and define the test TI and TR
+Sub introduction()
+  ' Purpusose of this sub is to load setting and pop up the dialog box with setting and information to fill from users side
+  ' Used Subs :
+  '                Ereasor()
+  '                LoadSettingRP()
+
+  
+dim Fso, object_folder,folder_files
+Call Ereasor()                                         ' clears the folder TDP and proccessed in diadem folder.
+Call Data.Root.Clear()          
+Call LoadSettingRP()                                   ' loading the settings from txt file stored in diadem folder under folder settings.
+
+Call SUDDlgShow("Dlg1","InfoV1.2.SUD")                 ' calling the dialog box with setting and information about the test.
+
+if B3 then                                            
+  AutoQuit()                                           ' kill the script if dialogbox is terminated 
+end if 
+
+R8=1                                                   ' Used for count the number of channels
+end sub                                       ' Setting & input information
+'------------------------------------------------------- Subs and function that are used for parsing out the noise out of the record.
+sub clear_data()
+
+  ' Purpusose of this is to delete noise at the begging and end of the record (encoder, and both forces)
+  ' Used Subs :
+  '               nameOfFile(file)
+  '               start_index()
+  '               end_index()
+  '               nameOfFile()
+  '               call Condicional()
+  '               raw_finder()
+  '               addition_finder()
+  '               precise_finder()
+  '               deleter()
+  
+  dim oNameFile, length_of_ENC, Wavestep        
+  dim Fso,object_folder,folder_files,file
+
+  Set Fso = CreateObject("Scripting.filesystemobject")    
+  Set object_folder = Fso.GetFolder(T2)
+  set folder_files = object_folder.files
+  
+for each file in folder_files
+
+  if InstrRev(file,".tdms") > 0 and InstrRev(file,".tdms_index") = 0 and InstrRev(file,"FORCE")  > 0 Then
+    Call Data.Root.Clear()
+    Call DataFileLoad(file)  
+  
+    oNameFile=nameOfFile(file)
+    TV(R8)=oNameFile
+    R8=R8+1
+    
+    R9=start_index()
+    R10=end_index()
+    
+    Call DataBlDel("'[1]/Time', '[1]/Load Cell 1', '[1]/Load Cell 2', '[1]/Encoder compensated'",R10,data.Root.ChannelGroups(1).Channels("Encoder compensated").Properties("Length").Value,1)
+    Call DataBlDel("'[1]/Time', '[1]/Load Cell 1', '[1]/Load Cell 2', '[1]/Encoder compensated'",1,R9,1)
+    
+    Call ChnDelete("[1]/ToFilter")
+    Call ChnDelete("[1]/ToFilter1")
+    
+    Call ChnDelete("[1]/FilteredSignal")
+    Call ChnDelete("[1]/FilteredSignal1")
+    
+    
+    call Condicional()
+    call raw_finder()
+    call addition_finder()
+    call precise_finder()
+    call deleter()
+    
+    length_of_ENC=data.Root.ChannelGroups(1).Channels("Encoder compensated").Properties("Length").Value
+    Call ChnDelete("[1]/Time")
+    R11=data.Root.ChannelGroups(1).Channels("Encoder compensated").Properties("wf_increment").Value
+
+    Call ChnLinGen("[1]/Time",0,length_of_ENC*R11,length_of_ENC)
+    
+    Call ChnToWfChn("[1]/Time", "Load cell 1", "WfXRelative")
+    Call ChnToWfChn("[1]/Time", "Load cell 2", "WfXRelative")
+    Call ChnToWfChn("[1]/Time", "Encoder compensated","WfXRelative")
+    
+    Call DataFileSave( "C:\Diadem\" & T1 &"-"& oNameFile  & "-FORCE" & ".tdms","TDMS")
+  end if 
+  next
+
+end sub                                         ' Delete the noise at the end and front of recotf and blackouts of the servo caused by buffer. 
+function nameOfFile(raw_name)
+  Dim RegExpression
+  Dim mining
+  
+  Set RegExpression = CreateObject("VBScript.RegExp") 
+  RegExpression.Pattern="(?!\S+\\)\S+(?=[0-9]{4}((_|-)[0-9]{2}){5}(-FORCE\.tdms|\.lvm))"
+  Set mining=RegExpression.Execute(raw_name)
+  RegExpression.Pattern="(_|\\|TR-[0-9]{2}-[0-9]{5})"
+  RegExpression.Global = TRUE
+  nameOfFile=RegExpression.Replace(mining(0)," ")
+  nameOfFile=trim(nameOfFile)
+  
+end function                                    ' Load the proccessed data    
+Function nameOfFileTDP(raw_name)
+
+  Dim RegExpression
+  Dim mining
+  
+  raw_name=split(raw_name,"TR-")(1)
+  Set RegExpression = CreateObject("VBScript.RegExp") 
+  RegExpression.Pattern=".+(?=-FORCE_TDP\.tdms)"
+  Set mining=RegExpression.Execute(raw_name)
+  nameOfFileTDP =mining(0)
+  nameOfFileTDP = Mid(nameOfFileTDP , 10, len(nameOfFileTDP ))
+  
+end function                                 ' Load the proccessed data    
+function checkin(piece)
+dim MyIndexes
+MyIndexes = IDx(piece,"TV")
+if MyIndexes>0 then
+checkin=True
+else 
+checkin=False
+end if 
+end function                                       ' Load the proccessed data    
+sub Ereasor ()
+Call FolderDelete("C:\Diadem\Processed", TRUE)
+Call FolderCreate("C:\Diadem\Processed")
+
+Call FolderDelete("C:\Diadem\TDP", TRUE)
+Call FolderCreate("C:\Diadem\TDP")
+
+end sub                                            ' Load the proccessed data    
+function Frontmed()
+dim maxFront, minFront, i, Encod
+
+set Encod= data.GetChannel("[1]/Encoder compensated") 
+maxFront=Encod(1)
+minFront=Encod(1)
+
+for i=2 to 50000
+  if Encod(i)>maxFront then
+    maxFront=Encod(i)
+  elseif Encod(i)<minFront then
+    minFront=Encod(i)
+  end if
+next
+if B2 then
+Frontmed=(maxFront+minFront)/2-0.05
+else
+Frontmed=(maxFront+minFront)/2-0.5
+end if
+
+end function                                      ' Load the proccessed data    
+function Backmed()
+
+dim  maxBack, minBack, i ,Encod, lenghtofENC
+
+lenghtofENC=data.Root.ChannelGroups(1).Channels("Encoder compensated").Properties("Length").Value
+set Encod= data.GetChannel("[1]/Encoder compensated") 
+
+maxBack=Encod(lenghtofENC)
+minBack=Encod(lenghtofENC)
+
+for i=lenghtofENC-1 to  lenghtofENC-50000 step -1
+  if Encod(i)>maxBack then
+    maxBack=Encod(i)
+  elseif Encod(i)<minBack then
+    minBack=Encod(i)
+  end if
+next
+if B1 then
+Backmed=(maxBack+minBack)/2+0.05
+else
+Backmed=(maxBack+minBack)/2+0.5
+end if
+end function                                       ' Load the proccessed data    
+Sub Condicional()
+
+Call ChnFiltCalc("","[1]/Encoder compensated","/FilteredSignal","IIR","Bessel","Low pass",2,0.35,0,0,1.2,25,"Hamming",0,0)
+
+ChnEventList1 = Null 
+ChnEventList2 = Null 
+ChnEventResultList = Null 
+ChnEventList1 = ChnEventDetectionWindow(, "[1]/FilteredSignal", Backmed, 100, 0, 0)
+ChnEventList2 = ChnEventDetectionWindow(, "[1]/FilteredSignal", -100, Frontmed, 0, 0)
+ChnEventResultList = ChnEventOperationOR(ChnEventList1, ChnEventList2)
+Call ChnEventCreateStatusChn("[1]/EventStatus", ChnEventResultList, "[1]/[2]", 0, 1)
+
+data.Root.ChannelGroups(1).Channels("EventStatus").Properties("wf_start_offset").Value=-0.5
+
+end sub                                        ' Load the proccessed data    
+Sub raw_finder()
+dim lenghtofENC,socketEVE,socketSTR,socketEND,b,i
+dim BlackOut,stepwave,classic_blackout_interval,d,endblackout,missed_place,startblackout
+
+call data.Root.ChannelGroups(1).Channels.Add("Startindex",DataTypeChnFloat64)
+call data.Root.ChannelGroups(1).Channels.Add("Endindex",DataTypeChnFloat64)
+
+lenghtofENC=data.Root.ChannelGroups(1).Channels("Encoder compensated").Properties("Length").Value
+
+set socketEVE=data.GetChannel("[1]/EventStatus")
+set socketSTR=data.GetChannel("[1]/Startindex")
+set socketEND=data.GetChannel("[1]/Endindex")
+b=1
+
+for i=lenghtofENC-1 to 1 step -1
+  if socketEVE(i)>socketEVE(i+1) then
+    socketEND(b)=i
+  elseif socketEVE(i)<socketEVE(i+1) then
+    socketSTR(b)=i+1
+  b=b+1
+  end if
+next
+
+
+
+end sub                                         ' Load the proccessed data    
+sub addition_finder()
+dim CHStart,CHEnd,BlackOut,stepwave,classic_blackout_interval,i,d,endblackout,missed_place,startblackout
+
+set CHStart= data.GetChannel("[1]/Startindex")
+set CHEnd= data.GetChannel("[1]/Endindex")
+
+d=data.Root.ChannelGroups(1).Channels("Endindex").Properties("Length").Value
+if data.Root.ChannelGroups(1).Channels("Startindex").Properties("Length").Value<data.Root.ChannelGroups(1).Channels("Endindex").Properties("Length").Value then
+Call DataBlDel(CHEnd, d, d+1)
+end if
+
+BlackOut=data.Root.ChannelGroups(1).Channels("Startindex").Properties("Length").Value
+stepwave=data.Root.ChannelGroups(1).Channels("EventStatus").Properties("wf_increment").Value
+if B2 then
+  classic_blackout_interval=(R6+200)/stepwave
+else 
+  classic_blackout_interval=(1682+500)/stepwave
+end if
+
+
+
+for i=1 to BlackOut-1
+  if CHStart(i)-CHEnd(i+1)>classic_blackout_interval then
+    BlackOut=BlackOut+1
+    missed_place=(CHEnd(i+1)+CHStart(i))/2
+    endblackout=round(missed_place+1.5/stepwave)
+    startblackout=round(missed_place-1.5/stepwave)  
+    CHEnd(BlackOut)=endblackout
+    CHStart(BlackOut)=startblackout
+
+  end if   
+next
+
+Call ChnMultipleSortExt("[1]/Startindex","","Down","UpperCase",1)
+Call ChnMultipleSortExt("[1]/Endindex","","Down","UpperCase",1)
+
+end sub                                    ' Load the proccessed data    
+Sub precise_finder()
+dim Blackout,socketSTR,socketENC,socketEND,socketNEWSTR,socketNEWEND,i,newSTR,newEND
+call data.Root.ChannelGroups(1).Channels.Add("NEWStartindex",DataTypeChnFloat64)
+call data.Root.ChannelGroups(1).Channels.Add("NEWEndindex",DataTypeChnFloat64)
+
+Blackout=data.Root.ChannelGroups(1).Channels("Startindex").Properties("Length").Value
+set socketSTR=data.GetChannel("[1]/Startindex")
+set socketEND=data.GetChannel("[1]/Endindex")
+set socketENC=data.GetChannel("[1]/Encoder compensated")
+set socketNEWSTR=data.GetChannel("[1]/NEWStartindex")
+set socketNEWEND=data.GetChannel("[1]/NEWEndindex")
+
+for i=1 to Blackout
+
+newEND=socketEND(i)
+Do while not(abs(socketENC(newEND))<0.1 and socketENC(newEND)<socketENC(newEND+1))
+newEND=newEND+1
+loop
+socketNEWEND(i)=newEND
+
+newSTR=socketSTR(i)
+Do while not(abs(socketENC(newSTR))<0.1 and socketENC(newSTR)>socketENC(newSTR-1))
+newSTR=newSTR-1
+loop
+socketNEWSTR(i)=newSTR
+
+next
+
+end Sub                                     ' Load the proccessed data    
+Sub deleter()
+dim socketNEWSTR,socketDIF,socketENC,socketLC1,socketLC2,Blackout,i,formula_wear
+call data.Root.ChannelGroups(1).Channels.Add("Difference",DataTypeChnFloat64)
+formula_wear = "Ch(""[1]/Difference"")=Ch(""[1]/NEWEndindex"")-Ch(""[1]/NEWStartindex"")"          
+Call Calculate (formula_wear,NULL,NULL,"")
+
+
+set socketNEWSTR=data.GetChannel("[1]/NEWStartindex")
+set socketDIF=data.GetChannel("[1]/Difference")
+
+Blackout=data.Root.ChannelGroups(1).Channels("Startindex").Properties("Length").Value
+
+for i=1 to Blackout
+Call DataBlDel("'[1]/Time', '[1]/Load Cell 1', '[1]/Load Cell 2', '[1]/Encoder compensated'",socketNEWSTR(i),socketDIF(i),1)
+next
+
+Call ChnDelete("[1]/FilteredSignal")
+Call ChnDelete("[1]/EventStatus")
+Call ChnDelete("[1]/Difference")
+Call ChnDelete("[1]/NEWEndindex")
+Call ChnDelete("[1]/NEWStartindex")
+Call ChnDelete("[1]/Startindex")
+Call ChnDelete("[1]/Endindex")
+
+
+end sub                                            ' Load the proccessed data    
+sub LoadSettingRP()
+dim data_folder,fso,LogFile
+                                                                                                                    ' Making a connection with Setttings R&P
+set fso = CreateObject( "Scripting.FileSystemObject" )
+set data_folder = fso.getFolder( "C:\Diadem\Scripts\Settings" )
+
+set LogFile = fso.OpenTextFile("C:\Diadem\Scripts\Settings\RP_settings.txt", 1,False)
+
+                                                                                                                    ' Loading the data to table from txt file.
+R1= val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1))
+T3=Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1)
+T2=Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1)
+T4=Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1)
+T5=Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1)
+R3=val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1))
+R4=val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1)) 
+R5=val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1))
+R6=val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1))
+R7=val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1))
+LogFile.Close
+
+
+end sub                                      ' Load the proccessed data    
+function start_index()
+
+dim index_filter,oMyChannelList1,oMyChannelList2,OFilteredSignal,OoriginalEncoder,length_of_ENC
+length_of_ENC=data.Root.ChannelGroups(1).Channels("Encoder compensated").Properties("Length").Value
+index_filter=round(0.05*length_of_ENC)
+
+Call Data.Root.ChannelGroups(1).Channels.Add("ToFilter",DataTypeChnFloat64)
+Set oMyChannelList1 = Data.GetChannels("[1]/Encoder compensated")
+Set oMyChannelList2 = Data.GetChannels("[1]/ToFilter")
+
+Call DataBlCopy(oMyChannelList1, 1,index_filter , oMyChannelList2, 1)
+Call ChnFiltCalc("[1]/Time","[1]/ToFilter","/FilteredSignal","IIR","Bessel","High pass",2,10,0,0,1.2,25,"Hamming",0,0)
+set OFilteredSignal=Data.Root.ChannelGroups(1).Channels("FilteredSignal")
+start_index=300
+Do while abs(OFilteredSignal(start_index))<0.1
+  start_index=start_index+100
+loop
+set OoriginalEncoder=Data.Root.ChannelGroups(1).Channels("Encoder compensated")
+
+do while abs(OoriginalEncoder(start_index))>0.1
+start_index=start_index+1
+loop
+start_index=start_index-1
+end function                                   ' Load the proccessed data    
+function end_index()
+dim length_of_ENC,index_filter,index_filter2,oMyChannelList1,oMyChannelList2,OFilteredSignal,OoriginalEncoder
+
+length_of_ENC=data.Root.ChannelGroups(1).Channels("Encoder compensated").Properties("Length").Value
+index_filter=round(0.05*length_of_ENC)
+index_filter2 = length_of_ENC - index_filter
+
+Call Data.Root.ChannelGroups(1).Channels.Add("ToFilter1",DataTypeChnFloat64)
+Set oMyChannelList1 = Data.GetChannels("[1]/Encoder compensated")
+Set oMyChannelList2 = Data.GetChannels("[1]/ToFilter1")
+Call DataBlCopy(oMyChannelList1, index_filter2, index_filter, oMyChannelList2, 1)
+
+Call ChnFiltCalc("[1]/Time","[1]/ToFilter","/FilteredSignal1","IIR","Bessel","High pass",2,10,0,0,1.2,25,"Hamming",0,0)
+Set OFilteredSignal=Data.Root.ChannelGroups(1).Channels("FilteredSignal1")
+end_index=index_filter2-300 
+
+Do while abs(OFilteredSignal(end_index))<0.1
+  end_index=end_index-100
+loop
+set OoriginalEncoder=Data.Root.ChannelGroups(1).Channels("Encoder compensated")
+do while abs(OoriginalEncoder(end_index))>0.1
+  end_index=end_index-1
+loop
+end_index=end_index+1
+end_index=index_filter2+end_index-R9
+end function                                     ' Load the proccessed data    
+Sub raw_data_back_up()
+dim Fso,object_folder,folder_files,fileCondition,OrignalName
+
+Set Fso = CreateObject("Scripting.filesystemobject")
+Set object_folder = Fso.GetFolder(T2)
+set folder_files = object_folder.files
+
+for each fileCondition in folder_files
+
+  OrignalName=Split(fileCondition, T2, -1,vbTextCompare)
+  if InstrRev(OrignalName(1),".tdms") > 0 and InstrRev(OrignalName(1),".tdms_index") = 0 and InstrRev(OrignalName(1),"FORCE")  > 0 Then
+    If FolderExist(T4&"\"&T1) then
+      Call FileMove(fileCondition,T4&"\"&T1&"\" & OrignalName(1) & ".tdms")
+    else
+      Call FolderCreate(T4&"\"&T1)
+      Call FileMove(fileCondition,T4&"\"&T1&"\" & OrignalName(1) & ".tdms")
+    end if
+  end if
+  
+next
+
+end sub                                   ' Load the proccessed data    
+'-------------------------- DATA PROCESSING 
+'------------------------------------------------------- Subs and function that are used for data proccesing.
+Sub Main()
+
+' PRIMARY PARAMETERS FROM CONFIG FILE
+dim A             'Envelope parameter - interval size [s]
+dim B             'Smooth parameter - Smooth Width [s]
+dim SFres         'Resampling frequency[Hz]
+dim SRed          'Starting interval removed[s]
+
+' Other variables 
+
+dim fso, file, folder_files
+dim DataReadPath, data_folder, f, f_aux, ConfigFile, LogFile, line,i
+dim text_array, ifound
+dim SF, SF_aux, Start_Sample, Start_Sample_aux, End_Sample, End_Sample_aux, O, L, S, SS
+Dim UEL, LEL
+Dim UE_name, LE_name, MEAN_name, SMOOTH_name, ChannelName, length_of_ENC
+Dim imax, aux_found
+dim new_filename, aux_filename
+dim Channels_export
+Call Data.Root.Clear()
+
+            ' define & read data folder, open log file (append) 
+set fso = CreateObject( "Scripting.FileSystemObject" )
+DataReadPath = "C:\Diadem"
+set data_folder = fso.getFolder( DataReadPath )
+set folder_files = data_folder.files
+set LogFile = fso.OpenTextFile(DataReadPath & "\scripts\log.txt", 8)
+
+            ' start log file record (date + time) 
+Call LogFile.WriteLine ( vbCrLf &  vbCrLf & FormatDateTime(Now, vbGeneralDate) & vbCrLf)
+
+
+            ' do for each file in data folder
+for each f in folder_files
+            ' do only for *.tdms files with "FORCE" string, exclude *.tdms_index files 
+
+if InstrRev(f,".tdms") > 0 and InstrRev(f,".tdms_index") = 0 and InstrRev(f,"FORCE")  > 0 Then
+
+            ' open config file
+
+              if T3="default" then
+
+                A= R7
+                B= R4
+                SFres = R5
+                SRed = R3
+              end if
+
+    
+              ' write primary variables to log file
+Call LogFile.WriteLine ( vbCrLf & FormatDateTime(Now, vbGeneralDate) & vbCrLf)
+Call LogFile.WriteLine (f & vbCrLf & "A: " & A & " B: " & B & " SFRes: " & SFRes &" SRed: " & SRed)
+              'Clear all channels
+Call Data.Root.Clear()
+              'Load file
+Call DataFileLoad(f)
+              'Calculate secondary PARAMETERS - Do not Change!! 
+SF=1/(Data.Root.ChannelGroups(1).Channels("Load Cell 1").Properties("wf_increment").Value)     'SamplingFrequency [Hz]
+Start_Sample =SRed*SF                                                                          'Data load - first sample
+End_Sample =Data.Root.ChannelGroups(1).Channels("Load Cell 1").Properties("length").Value      'Data load - last sample
+L = (End_Sample - Start_Sample)/ SF                                                            'Reduced Data Length [s]                                                                   
+O=100*(A/L)                                                                                    ' Envelope parameter - Interval size [%]
+S=round(B*SF, 0)                                                                               'Smooth Width 1
+SS=round(B*SFres, 0)                                                                            'Smooth Width 2
+
+'exclude encoder if channel does not exist
+        if Data.Root.ChannelGroups(1).Channels.Exists("Encoder compensated") = TRUE then
+          imax = 4
+        else
+          imax = 3
+        end if
+              'Clear again all channels
+Call Data.Root.Clear()
+              ' write secondary variables to log file
+Call LogFile.WriteLine ("SF: "& SF &" L: " & L &" O: " & O &" S: " & S &" SS: " & SS)
+              ' generate Common X channels 
+Call ChnLinGen("/X_COM",0,L,(SFres*L)+1)
+Call ChnLinGen("/X_COMH",0,L/3600,(SFres*L)+1)
+
+              ' do for 3 selected channels, LC1; LC2; Encoder, set names for output channels
+              
+for i=2 to imax
+          if i=2 then
+            ChannelName="Load Cell 1"
+            UE_name = "LC1_EUP"
+            LE_name = "LC1_ELOW"
+            MEAN_name = "LC1_MEAN"
+            SMOOTH_name = "LC1_SMOOTH"
+          elseif i=3 then
+            ChannelName="Load Cell 2"
+            UE_name = "LC2_EUP"
+            LE_name = "LC2_ELOW"
+            MEAN_name = "LC2_MEAN"
+            SMOOTH_name = "LC2_SMOOTH"
+          elseif i=4 then
+            ChannelName="Encoder compensated"
+            UE_name = "ENC_EUP"
+            LE_name = "ENC_ELOW"
+            MEAN_name = "ENC_MEAN"
+            SMOOTH_name = "ENC_SMOOTH"
+          end if
+              'Load reduced channel from source file
+  Call DataFileLoadRed(f,"TDMS","[1]/" & ChannelName,"IntervalWidth",1,1,Start_Sample,End_Sample)  
+              'Rename channel, remove "Sample" 
+  Data.Root.ChannelGroups(1).Channels(ChannelName & "_Sample").Name = ChannelName
+              ' start WF channel at x = 0
+  Data.Root.ChannelGroups(1).Channels(ChannelName).Properties("wf_start_offset").Value=0
+              ' Generate channel envelopes 
+  Call ChnEnvelopes("","[1]/" & ChannelName,"/UpperEnvelopeX_" & ChannelName,"/UpperEnvelopeY_" & ChannelName,"/LowerEnvelopeX_" & ChannelName,"/LowerEnvelopeY_" & ChannelName,O)
+              ' Delete Last Envelope Value 
+   UEL=(Data.Root.ChannelGroups(1).Channels("UpperEnvelopeX_" & ChannelName).Properties("length").Value) 'Upper Envelope Length
+   LEL=(Data.Root.ChannelGroups(1).Channels("LowerEnvelopeX_" & ChannelName).Properties("length").Value) 'Lower Envelope Length
+   Call DataBlDel("[1]/UpperEnvelopeX_" & ChannelName,UEL,1,1)
+   Call DataBlDel("[1]/UpperEnvelopeY_" & ChannelName,UEL,1,1)
+   Call DataBlDel("[1]/LowerEnvelopeX_" & ChannelName,LEL,1,1)
+   Call DataBlDel("[1]/LowerEnvelopeY_" & ChannelName,LEL,1,1)
+              ' Delete First Envelope Value 
+   Call DataBlDel("[1]/UpperEnvelopeX_" & ChannelName,1,1,1)
+   Call DataBlDel("[1]/UpperEnvelopeY_" & ChannelName,1,1,1)
+   Call DataBlDel("[1]/LowerEnvelopeX_" & ChannelName,1,1,1)
+   Call DataBlDel("[1]/LowerEnvelopeY_" & ChannelName,1,1,1)
+              ' Upper Envelope resampling
+ Call ChnMapLinCalc("[1]/UpperEnvelopeX_" & ChannelName,"[1]/UpperEnvelopeY_" & ChannelName,"[1]/X_COM", "[1]/"& UE_Name,1,"const. value",NOVALUE,"analogue")
+               'Delete original Upper envelope 
+   Call Data.Root.ChannelGroups(1).Channels.Remove("UpperEnvelopeX_" & ChannelName)
+   Call Data.Root.ChannelGroups(1).Channels.Remove("UpperEnvelopeY_" & ChannelName)
+                'Lower Envelope resampling
+   Call ChnMapLinCalc("[1]/LowerEnvelopeX_" & ChannelName,"[1]/LowerEnvelopeY_" & ChannelName,"[1]/X_COM","[1]/"& LE_Name,1,"const. value",NOVALUE,"analogue")
+                 'Delete Original Lower Envelope 
+   Call Data.Root.ChannelGroups(1).Channels.Remove("LowerEnvelopeX_" & ChannelName)
+   Call Data.Root.ChannelGroups(1).Channels.Remove("LowerEnvelopeY_" & ChannelName)
+                 'Mean Value Channel Calculation
+   Call ChnAverage("'[1]/" & UE_Name & "' - '[1]/" & LE_Name & "'","/" & MEAN_Name)
+                'First Smoothing 
+   Call ChnSmooth("[1]/" & ChannelName,"/Smooth1_" & ChannelName ,S,"maxNumber")
+  
+                 ' Added by Juraj Wolf due to not Waveform of "/Smooth1_" & ChannelName !
+   length_of_ENC=data.Root.ChannelGroups(1).Channels(ChannelName).Properties("Length").Value
+   Call ChnLinGen("[1]/Time",0,length_of_ENC*R11,length_of_ENC)
+   Call ChnToWfChn("[1]/Time", "Smooth1_" & ChannelName, "WfXRelative")
+   Call ChnDelete("[1]/Time")
+                  ' End of addition by Juraj Wolf due to not Waveform of "/Smooth1_" & ChannelName ! 
+                  
+                'Resample first Smooted curve
+   Call ChnResampleChnBased("","[1]/Smooth1_" & ChannelName,"[1]/X_COM","/Resample_" & ChannelName,"Analog",0,0)
+                'Delete First Smooth original curve 
+   Call Data.Root.ChannelGroups(1).Channels.Remove("Smooth1_" & ChannelName)
+                'Second Smooth - final average channel
+   Call ChnSmooth("[1]/Resample_" & ChannelName,"/" & SMOOTH_Name,SS,"maxNumber")
+                ' Delete the resampled curve 
+   Call Data.Root.ChannelGroups(1).Channels.Remove("Resample_" & ChannelName)
+                'Delete original channel
+   Call Data.Root.ChannelGroups(1).Channels.Remove(ChannelName)
+ Next
+
+ ' .............. AUX File processing START........................
+ ' find *.lvm file matching f name, but without "FORCE" string, exclude *.lvm_index files 
+
+   aux_filename = replace(f, ".tdms", ".lvm")
+   aux_filename = replace(aux_filename, "-FORCE", "")
+   aux_found = 0
+for each f_aux in folder_files
+  if InstrRev(f_aux,aux_filename) > 0 and InstrRev(f_aux,".lvm_index") = 0 Then       
+      Call LogFile.WriteLine (replace (f_aux, DataReadPath & "\", "")& vbCrLf)
+      aux_found = 1
+      exit for
+  end if 
+next
+
+ ' ADD CHANNELS FROM AUX FILES
+ ' load channel, calculate parameter
+if aux_found = 1 then
+'Load AUX file
+    Call DataFileLoad(f_aux)
+'Calculate secondary AUX PARAMETERS  
+    SF_aux = 1/(Data.Root.ChannelGroups(2).Channels("Setpoint temperature [°C]").Properties("wf_increment").Value)
+    Start_Sample_aux =SRed*SF_aux                                                                          
+    End_Sample_aux =Data.Root.ChannelGroups(2).Channels("Setpoint temperature [°C]").Properties("length").Value 
+'Clear AUX channel group    
+    Call Data.Root.ChannelGroups.Remove(2)
+'Load + Resample AUX channels       
+    Call DataFileLoadRed(f_aux,"LVM","[1]/Setpoint temperature [°C]","IntervalWidth",1,1,Start_Sample_aux,End_Sample_aux)
+    Call ChnResampleChnBased("","[1]/Setpoint temperature [°C]_Sample","[1]/X_COM","[1]/TEMP_NOM","Analog",0,0)
+    Call Data.Root.ChannelGroups(1).Channels.Remove("Setpoint temperature [°C]_Sample")
+    
+    Call DataFileLoadRed(f_aux,"LVM","[1]/Actual temperature [°C]","IntervalWidth",1,1,Start_Sample_aux,End_Sample_aux)
+    Call ChnResampleChnBased("","[1]/Actual temperature [°C]_Sample","[1]/X_COM","[1]/TEMP","Analog",0,0)
+    Call Data.Root.ChannelGroups(1).Channels.Remove("Actual temperature [°C]_Sample")
+    
+    Call DataFileLoadRed(f_aux,"LVM","[1]/Setpoint servo [RPM]","IntervalWidth",1,1,Start_Sample_aux,End_Sample_aux)
+    Call ChnResampleChnBased("","[1]/Setpoint servo [RPM]_Sample","[1]/X_COM","[1]/SERVO_NOM","Analog",0,0)
+    Call Data.Root.ChannelGroups(1).Channels.Remove("Setpoint servo [RPM]_Sample")   
+    
+    Call DataFileLoadRed(f_aux,"LVM","[1]/Actual servo speed [RPM]","IntervalWidth",1,1,Start_Sample_aux,End_Sample_aux)
+    Call ChnResampleChnBased("","[1]/Actual servo speed [RPM]_Sample","[1]/X_COM","[1]/SERVO","Analog",0,0)
+    Call Data.Root.ChannelGroups(1).Channels.Remove("Actual servo speed [RPM]_Sample")  
+   
+
+  
+else
+   Call LogFile.WriteLine ("file " & replace (f_aux, DataReadPath & "\", "") & " not found" & vbCrLf)
+end if
+'Write results, distribute files  
+
+   Call FolderCreate(DataReadPath & "\TDP")
+   Call FolderCreate(DataReadPath & "\Processed")
+  
+  if FilEx (DataReadPath & f &".log") then
+      Call LogFile.WriteLine ( vbCrLf &  "ERROR! Check the DiaDEM log file" & vbCrLf)
+  end if
+  
+     Call LogFile.WriteLine ( vbCrLf &  "END " & f & vbCrLf)
+    
+   new_filename = replace(replace (f, DataReadPath & "\", ""), ".tdms", ".csv")
+   new_filename = replace(new_filename, ".csv", "_TDP.csv")
+   Set Channels_export = data.GetChannels("*")
+   Call DataFileSaveSel(DataReadPath & "\TDP" & "\" & new_filename,"CSV", Channels_export)
+   new_filename = replace (f, DataReadPath & "\", "")
+   new_filename = replace(new_filename, ".tdms", "_TDP.tdms")
+   Set Channels_export = data.GetChannels("*")
+   Call DataFileSaveSel(DataReadPath & "\TDP" & "\" & new_filename,"TDMS", Channels_export)  
+   Call DataFileMove(f, DataReadPath & "\Processed")
+   if aux_found = 1 then 
+    Call FileMove(f_aux, DataReadPath & "\Processed")
+    aux_found = 0
+   end if
+
+
+ End if
+Next
+
+Call Data.Root.Clear()
+
+end sub
+'-------------------------- CALCULATION
+'------------------------------------------------------- Subs and function that are used for additional calculations.                                         
+sub load_proccesed_data()
+Dim way_in,socket1,socket2,files,final_file, group, group_socket,n,Parsing_file
+
+
+set socket1=CreateObject("Scripting.filesystemobject")
+set socket2=socket1.GetFolder("C:\Diadem\TDP")
+set files=socket2.Files
+
+n=1
+for each final_file in files
+ 
+  if InstrRev(final_file,".tdms") > 0 and InstrRev(final_file,".tdms_index") = 0 and InstrRev(final_file,"FORCE")  > 0 Then
+    call DataFileLoad(final_file)
+    Parsing_file=nameOfFileTDP(final_file)    
+    Data.Root.ChannelGroups(n).Name = Parsing_file
+    n=n+1
+  end if
+next
+end sub
+sub calculate_Hysteresis(group_index)
+  dim formula_H
+  Call Data.Root.ChannelGroups(group_index).Channels.Add("Hysteresis",DataTypeFloat64)
+  formula_H = "Ch(""[#1]/Hysteresis"")=Ch(""[#1]/Rod Force range"")-Ch(""[#1]/Spring Force range"")"          
+  formula_H = Replace(formula_H,"#1",group_index)
+  Call Calculate (formula_H,NULL,NULL,"")
+end sub
+sub calculate_Rod_Force_Range(group_index)
+  dim formula_RFR
+  Call Data.Root.ChannelGroups(group_index).Channels.Add("Rod Force range",DataTypeFloat64)
+  formula_RFR= "Ch(""[#1]/Rod Force range"")=Ch(""[#1]/LC1_EUP"")-Ch(""[#1]/LC1_ELOW"")"          
+  formula_RFR = Replace(formula_RFR,"#1",group_index)
+  Call Calculate (formula_RFR,NULL,NULL,"")
+ end sub
+Sub calculate_Spring_Force_Range(group_index)
+  dim formula_SFR
+  Call Data.Root.ChannelGroups(group_index).Channels.Add("Spring Force range",DataTypeFloat64)
+  formula_SFR = "Ch(""[#1]/Spring Force range"")=Ch(""[#1]/LC2_EUP"")-Ch(""[#1]/LC2_ELOW"")"          
+  formula_SFR = Replace(formula_SFR,"#1",group_index)
+  Call Calculate (formula_SFR,NULL,NULL,"")
+end sub
+Sub calculate_Wear(group_index)
+
+  'This Sub is used for calculation of wear from ENC_SMOOTH and ENC_MEAN ans checks if the wear is not corrupted.
+  
+  dim socket_first_value,formula_wear
+  dim a,b                                                                                 ' Parameters of regression.
+  
+  Call Data.Root.ChannelGroups(group_index).Channels.Add("WEAR",DataTypeFloat64)          'Creating a channel, the wear is calculated form ENC_SMOOTH.                         
+  Set socket_first_value = Data.Root.ChannelGroups(group_index).Channels("ENC_SMOOTH")
+  R2 = socket_first_value(1)                                                              'R2 is fist value of the encoder smooth, this value is subtract, this cause that recored starts from 0.
+  if B2 then                                                                              'B2==1 then formula for Rod-end & pin B2==0 then formula for Shaft & bushing.
+    formula_wear = "Ch(""[#1]/WEAR"")=R1*Tan(Rad(Ch(""[#1]/ENC_SMOOTH"")-R2))" 
+  else
+    formula_wear = "Ch(""[#1]/WEAR"")=0.115653*(Ch(""[#1]/ENC_SMOOTH"")-R2)-0.000117"  
+  end if                      
+  formula_wear = Replace(formula_wear,"#1",group_index)                                   
+  Call Calculate (formula_wear,NULL,NULL,"")
+   
+  ' Calculating regresion of the wear, this block of code is used for analysis whether the encoder record is corrupted or not.
+  Call ChnRegrXYCalc("["&group_index&"]/X_COMH","["&group_index&"]/WEAR","/RegressionX","/RegressionY","linear","Partition complete area",100,1)
+ 
+  a=Data.Root.ActiveChannelGroup.Channels("RegressionY").Properties("ResultRegrCoeffA").Value                                     'Coeficient of regression y=a*x+b.
+  b=Data.Root.ActiveChannelGroup.Channels("RegressionY").Properties("ResultRegrCoeffB").Value                                     'Coeficient of regression y=a*x+b.
+  
+  if Not((0.01<a and a<0.1)or(-1<b and b<2)) then                                                                                 'Chceking wheter the coefficient of regression are in allowed range.
+     Call Data.Root.ChannelGroups(group_index).Properties.Add("CORRUPTED_WEAR","CORRUPTED WEAR")
+  end if
+  
+  call Data.Root.ActiveChannelGroup.Channels.Remove("RegressionY")                                                                'deleting of redudendant channels from regressions.
+  call Data.Root.ActiveChannelGroup.Channels.Remove("RegressionX")                                                                'deleting of redudendant channels from regressions.
+  
+  Call Data.Root.ChannelGroups(group_index).Channels.Add("WEAR2",DataTypeFloat64)           
+  Set socket_first_value = Data.Root.ChannelGroups(group_index).Channels("ENC_MEAN")
+  R2 = socket_first_value(2)                                                                 'R2 is fist value of the encoder mean, this value is subtract, this cause that recored starts from 0.
+ 
+  if B2 then                                                                                 'B2==1 then formula for Rod-end & pin B2==0 then formula for Shaft & bushing.
+    formula_wear = "Ch(""[#1]/WEAR2"")=R1*Tan(Rad(Ch(""[#1]/ENC_MEAN"")-R2))"
+  else 
+    formula_wear = "Ch(""[#1]/WEAR2"")=0.115653*(Ch(""[#1]/ENC_MEAN"")-R2)-0.000117" 
+  end if
+  formula_wear = Replace(formula_wear,"#1",group_index)
+  Call Calculate (formula_wear,NULL,NULL,"")
+  
+  end sub
+Sub calculate_average_forces(group_index)
+  'Purposue of this function is to calculate average force from channel [#]/LC1_SMOOTH and [#]/LC2_SMOOTH 
+  dim average_source
+
+  average_source="[#]/LC1_SMOOTH"
+  average_source=Replace(average_source,"#",group_index)
+  Call StatBlockCalc("Channel","1-",average_source)
+  Call Data.Root.ChannelGroups(group_index).Channels("LC1_SMOOTH").Properties.Remove("ResultStatSum")               ' deleting redundant information
+
+  average_source="[#]/LC2_SMOOTH"
+  average_source=Replace(average_source,"#",group_index)
+  Call StatBlockCalc("Channel","1-",average_source)
+  Call Data.Root.ChannelGroups(group_index).Channels("LC2_SMOOTH").Properties.Remove("ResultStatSum")               ' deleting redundant information
+end sub
+sub set_average_parameters()
+
+  'Setting the parameters for calculation of average
+  StatSel(1)       = "No"
+  StatSel(2)       = "Yes"
+  StatSel(3)       = "No"
+  StatSel(4)       = "No"
+  StatSel(5)       = "No"
+  StatSel(6)       = "Yes"
+  StatSel(7)       = "No"
+  StatSel(8)       = "No"
+  StatSel(9)       = "No"
+  StatSel(10)      = "No"
+  StatSel(11)      = "No"
+  StatSel(12)      = "No"
+  StatSel(13)      = "No"
+  StatSel(14)      = "No"
+  StatSel(15)      = "No"
+  StatSel(16)      = "No"
+  StatSel(17)      = "No"
+  StatSel(18)      = "No"
+  StatSel(19)      = "No"
+  StatSel(20)      = "No"
+  StatSel(21)      = "No"
+  StatSel(22)      = "No"
+  StatSel(23)      = "No"
+  StatClipCopy     = 1
+  StatClipValue    = 0
+  StatFormat       = ""
+  StatResChn       = 0
+  StatResChnNames  = 1
+  StatResChnNameFormat= "NameName"
+  end sub
+Sub create_csv_file()
+
+Dim oMyChtoCSV,runCSVname,runint,XXX
+
+' This block of code copies the test condition to a related record with forces,encoder and wear record
+
+for runint=1 to groupcount
+  if checkin(Data.Root.ChannelGroups(runint).Properties("Name").Value) then                                                                    '
+    runCSVname=Data.Root.ChannelGroups(runint).Properties("Name").Value
+    for XXX=1 to groupcount
+    ' coping the record to a diffrent channelgroup
+      if InStrRev(Data.Root.ChannelGroups(XXX).Properties("Name").Value,"Condition "&runCSVname)>0 then
+        call data.Root.ChannelGroups(runint).Channels.Add("Setpoint temperature [°C]",DataTypeFloat64)
+        Call ChnCopy("["&XXX&"]/Setpoint temperature [°C]","["&runint&"]/Setpoint temperature [°C]")
+        call data.Root.ChannelGroups(runint).Channels.Add("Setpoint servo [RPM]",DataTypeFloat64)
+        Call ChnCopy("["&XXX&"]/Setpoint servo [RPM]","["&runint&"]/Setpoint servo [RPM]")
+        call data.Root.ChannelGroups(runint).Channels.Add("Actual temperature [°C]",DataTypeChnFloat64)
+        Call ChnCopy("["&XXX&"]/Actual temperature [°C]","["&runint&"]/Actual temperature [°C]")
+        call data.Root.ChannelGroups(runint).Channels.Add("Actual servo speed [RPM]",DataTypeFloat64)
+        Call ChnCopy("["&XXX&"]/Actual servo speed [RPM]","["&runint&"]/Actual servo speed [RPM]")
+        call data.Root.ChannelGroups(runint).Channels.Add("Num. cycles",DataTypeFloat64)
+        Call ChnCopy("["&XXX&"]/Num. cycles","["&runint&"]/Num. cycles")
+        call data.Root.ChannelGroups(runint).Channels.Add("Control action",DataTypeFloat64)
+        Call ChnCopy("["&XXX&"]/Control action","["&runint&"]/Control action")
+        call data.Root.ChannelGroups(runint).Channels.Add("Actual temperature 2 [°C]",DataTypeFloat64)
+        Call ChnCopy("["&XXX&"]/Actual temperature 2 [°C]","["&runint&"]/Actual temperature 2 [°C]")
+      end if
+     next
+  
+     ' picking which channels should be saved in .csv file
+     Set oMyChtoCSV = Data.GetChannels(""&runint&"]/X_COM")
+     Call oMyChtoCSV.Add(data.Root.ChannelGroups(runint).Channels("X_COMH"))
+     Call oMyChtoCSV.Add(data.Root.ChannelGroups(runint).Channels("WEAR"))
+     Call oMyChtoCSV.Add(data.Root.ChannelGroups(runint).Channels("LC1_SMOOTH"))
+    
+     ' chceks if the folder with TR-code exists and if not create one. Than save it to that folder     
+     If FolderExist("D:\Processed data\"&T1) then  
+       Call DataFileSaveSel("D:\Processed data\"&T1&"\"&T1&" "&runCSVname&".csv", "CSV", oMyChtoCSV)
+    else
+      Call FolderCreate("D:\Processed data\"&T1)
+      Call DataFileSaveSel("D:\Processed data\"&T1&"\"&T1&" "&runCSVname&".csv", "CSV", oMyChtoCSV)
+      
+    end if  
+  end if 
+next
+
+end sub
+sub load_test_condition()
+
+dim final_file, files, socket1, socket, Parsing_file
+
+' make connection with the folder that contains the test_condition records
+
+set socket=CreateObject("Scripting.filesystemobject")              
+set socket1=socket.GetFolder(T2)
+set files=socket1.Files
+
+'loop thru the folder and pick only the ones .lvm
+for each final_file in files
+ 
+if InstrRev(final_file,".lvm") >0 Then
+
+      Parsing_file=nameOfFile(final_file)                                                                                   ' Extract the name of the test so it could compare it with the encoder record
+      call DataFileLoad(final_file)                                                                                         ' Load the file
+      data.Root.ChannelGroups("Mean.").Properties("Name").Value="Condition "&Parsing_file                                   ' Rename the file
+      data.Root.ChannelGroups("Condition "&Parsing_file).Properties("Description").Value=Parsing_file
+      call data.Root.ChannelGroups(Parsing_file).Properties.Add("LVM_file_available",DataTypeString)
+      
+      Call StatBlockCalc("Channel","1-","Condition "&Parsing_file &"/Actual temperature [°C]")                                                ' Calculate the the average actual temperature
+      Call StatBlockCalc("Channel","1-","Condition "&Parsing_file &"/Actual temperature 2 [°C]")                                              ' Calculate the the average setpoint temperature
+      
+      Call DataBlDel("'Condition "&Parsing_file&"/Actual temperature [°C]'",1,160)
+      
+  end if
+next
+
+end sub
+'-------------------------- REPORT
+'------------------------------------------------------- Subs and function that are used for report creation.                                       
+Sub comment(variable,X1,Y1,X2,Y2,Bold,Size,Text,Color)
+      Set variable = Report.ActiveSheet.Objects.Add(eReportObjectComment,variable)
+      variable.Position.ByCoordinate.X1 = X1
+      variable.Position.ByCoordinate.Y1= Y1
+      variable.Position.ByCoordinate.X2 = X2
+      variable.Position.ByCoordinate.Y2 = Y2
+      variable.Comment.Text=Text
+      variable.Comment.Font.Name="Calibri"
+      variable.Comment.BackgroundColor.ColorIndex =eColorIndexNone
+      variable.Comment.Font.Bold = 0
+      variable.Comment.Font.Size = Size
+      variable.Comment.Font.Color.ColorIndex=Color
+      variable.Comment.TextAlignmentVertical=eCommentTextAlignmentVerticalCentric
+      variable.Comment.TextAlignmentHorizontal=eCommentTextAlignmentHorizontalCentric
+      variable.Arrow.Line.Color.ColorIndex=eColorIndexNone
+      Call variable.Comment.BorderLine.Color.SetPredefinedColor(eColorIndexNone)
+      Call variable.Position.ZOrder.MoveToForeground()
+end Sub                                         
+Sub create_report_table()
+  dim TRtable,trTroubletable,number,lvmfile,trTroubletable1
+  
+  Set TRtable=Report.ActiveSheet.Objects.Add(eReportObject2DTable,"TRtable")
+  
+  TRtable.Position.ByBorder.Top=34
+  TRtable.Position.ByBorder.Left=5
+  TRtable.Position.ByBorder.Right=5
+  TRtable.Position.ByBorder.Bottom=50
+  TRtable.Settings.UseAutoFontSize=0
+  TRtable.Settings.BorderLineColor.ColorIndex=eColorIndexNone
+  TRtable.Settings.UseYDoubleLine=0
+  TRtable.Settings.Header.Alignment=e2DTableAlignmentCentric
+  TRtable.Settings.Header.Height=12
+  TRtable.Settings.IndexSettings.IndexMode=e2DTableIndexModeAutomaticMinimum
+
+  set trTroubletable=TRtable.Columns.Add(e2DTableColumnText)
+  trTroubletable.TextList.Count=1
+  trTroubletable.TextList(1).Text=Data.Root.ChannelGroups(1).Properties("Name").Value
+  trTroubletable.Settings.Header.IndividualTitle.Title1="Sample"
+  trTroubletable.Settings.Font.Name="Calibri"
+  trTroubletable.Settings.Font.Size=2.3
+  trTroubletable.Settings.Header.IndividualSettings.Enable=True
+  trTroubletable.Settings.Header.IndividualSettings.Font.Size=2.5
+  trTroubletable.Settings.Header.IndividualSettings.Alignment=e2DTableAlignmentCentric
+  trTroubletable.Settings.Header.IndividualSettings.Font.Name="Calibri"
+  
+  number=Data.Root.ChannelGroups(1).Properties("Name").Value
+  lvmfile=Data.Root.ChannelGroups.Exists("Condition "&number)
+  
+  
+  set trTroubletable1=TRtable.Columns.Add(e2DTableColumnText)
+  trTroubletable1.TextList.Count=1
+  if lvmfile then
+  trTroubletable1.TextList(1).Text=Data.Root.ChannelGroups("Condition "&number).Channels("Setpoint temperature [°C]").Properties("Maximum").Value
+  else
+  trTroubletable1.TextList(1).Text="-"
+  end if
+  trTroubletable1.Settings.Header.IndividualTitle.Title1="Temperature [°C]"
+  trTroubletable1.Settings.Font.Name="Calibri"
+  trTroubletable1.Settings.Font.Size=2.3
+  trTroubletable1.Settings.Header.IndividualSettings.Enable=True
+  trTroubletable1.Settings.Header.IndividualSettings.Font.Size=2.5
+  trTroubletable1.Settings.Header.IndividualSettings.Alignment=e2DTableAlignmentCentric
+  trTroubletable1.Settings.Header.IndividualSettings.Font.Name="Calibri"
+  
+  set trTroubletable1=TRtable.Columns.Add(e2DTableColumnText)
+  trTroubletable1.TextList.Count=1
+  if lvmfile then
+  trTroubletable1.TextList(1).Text=Data.Root.ChannelGroups("Condition "&number).Channels("Setpoint servo [RPM]").Properties("Maximum").Value
+  else
+   trTroubletable1.TextList(1).Text="-"
+  end if 
+  trTroubletable1.Settings.Header.IndividualTitle.Title1="Servo speed[RPM]"
+  trTroubletable1.Settings.Font.Name="Calibri"
+  trTroubletable1.Settings.Font.Size=2.3
+  trTroubletable1.Settings.Header.IndividualSettings.Enable=True
+  trTroubletable1.Settings.Header.IndividualSettings.Font.Size=2.5
+  trTroubletable1.Settings.Header.IndividualSettings.Alignment=e2DTableAlignmentCentric
+  trTroubletable1.Settings.Header.IndividualSettings.Font.Name="Calibri"
+
+  set trTroubletable1=TRtable.Columns.Add(e2DTableColumnText)
+  trTroubletable1.TextList.Count=1
+  trTroubletable1.TextList(1).Text=round(Data.Root.ChannelGroups(1).Channels("X_COMH").Properties("Maximum").Value)
+  trTroubletable1.Settings.Header.IndividualTitle.Title1="Duration[h]"
+  trTroubletable1.Settings.Font.Name="Calibri"
+  trTroubletable1.Settings.Font.Size=2.3
+  trTroubletable1.Settings.Header.IndividualSettings.Enable=True
+  trTroubletable1.Settings.Header.IndividualSettings.Font.Size=2.5
+  trTroubletable1.Settings.Header.IndividualSettings.Alignment=e2DTableAlignmentCentric
+  trTroubletable1.Settings.Header.IndividualSettings.Font.Name="Calibri"
+
+  end sub
+sub parameter_control()
+  
+  'This Sub is resposible for generating the error message if: -average test temperature is out the range of the setpoint temperature 
+  '                                                            -there are some temperature peaks
+  '                                                            -encoder is corrupted
+  
+  dim position,Condition,temperature_average,temperature_max,temperature_min,settemperature,settemperaturestep,acceptable_peak,acceptable_range
+  dim average_temperature,at
+  dim temperature_peak,tp
+  dim corupted_wear_lvm,cwl
+
+  if Data.Root.ChannelGroups(1).Properties.Exists("LVM_file_available") then
+    position=Data.Root.ChannelGroups(1).Properties("Name").Value
+    Condition="Condition "&position 
+    
+    temperature_average= Data.Root.ChannelGroups(Condition).Channels("Actual temperature [°C]").Properties("ResultStatArithMean").Value
+    temperature_max=Data.Root.ChannelGroups(Condition).Channels("Actual temperature [°C]").Properties("Maximum").Value
+    temperature_min=Data.Root.ChannelGroups(Condition).Channels("Actual temperature [°C]").Properties("Minimum").Value 
+    settemperature=Data.Root.ChannelGroups(Condition).Channels("Setpoint temperature [°C]").Properties("Maximum").Value
+    settemperaturestep=Data.Root.ChannelGroups(Condition).Channels("Setpoint temperature [°C]").Properties("Minimum").Value
+    acceptable_peak=10
+    acceptable_range=1
+      
+    ' this condition checks if the average temperature is in the acetable range
+    if  ((settemperature-acceptable_range>temperature_average)or(settemperature+acceptable_range<temperature_average)) and settemperaturestep=settemperature then
+      average_temperature=vbNewLine&"-Average actual temprerature is out of the acceptable range"
+      at=True
+    else
+      at=False
+      average_temperature=""
+    end if 
+    ' this condition checks if there were some temperature peaks  
+    if  temperature_min<settemperature-acceptable_peak or temperature_max>settemperature+acceptable_peak then
+      temperature_peak=vbNewLine&"-High or low peaks of temperature occur"
+      tp=True
+    else
+      tp=False
+      temperature_peak=""
+    end if
+    ' this condition checks if the encoder was corrupted      
+    if Data.Root.ChannelGroups(1).Properties.Exists("CORRUPTED_WEAR") then 
+      corupted_wear_lvm=vbNewLine&"-Encoder record might be corrupted"
+      cwl=True
+    else 
+      corupted_wear_lvm=""
+      cwl=False
+    end if 
+      
+    if tp or at or cwl then
+        
+  call comment("Warnings",0,16,100,27,1,2.2,"Warnings:"&average_temperature&temperature_peak&corupted_wear_lvm,eColorIndexRed)
+   end if     
+  end if 
+  
+end sub
+Sub create_report()
+
+dim i, position
+for i=1 to Groupcount
+
+  if checkin(Data.Root.ChannelGroups(i).Properties("Name").Value) then
+  
+          position=Data.Root.ChannelGroups(i).Properties("Name").Value
+          Call Data.Move(Data.Root.ChannelGroups(i),Data.Root.ChannelGroups,1)                  'move the exact run at first place in treee and than make a report
+          Call ChnRenumber()
+          call picdelete()                                                                      'delete the previous report
+          Call PicLoad("TemplateForReport")
+          Call Report.Sheets("Front Page").Activate                                             'save the front page active so u can create the table and run title  
+          call comment("RunTitle"&i,0,76,100,83,1,5,Data.Root.ChannelGroups(1).Properties("Name").Value,eColorIndexBlack)
+          
+    Call ChnLinGen("[1]/LinTime1"&i,0,data.Root.ChannelGroups(1).Channels("X_COMH").Properties("Maximum").Value,data.Root.ChannelGroups(1).Channels("Actual temperature [°C]").Properties("Length").Value)
+    Call ChnLinGen("[1]/LinTime2"&i,0,data.Root.ChannelGroups(1).Channels("X_COMH").Properties("Maximum").Value,data.Root.ChannelGroups(1).Channels("Setpoint servo [RPM]").Properties("Length").Value)
+    Call ChnRenumber()
+    
+    Call Create_report_table()
+  
+    Call parameter_control()
+   
+    Call report.Refresh()
+
+  if report.Sheets.Exists("Sheet 1") then                                                'deleting first page if exist.
+    call GraphSheetdelete("Sheet 1")
+  end if   
+  Call PicUpdate(0)
+  
+  If FolderExist(T5&"\"&T1) then                                                         ' saving the report 
+      Call Report.Sheets.ExportToPDF(T5&"\"&T1&"\"&T1&" "&position, False)
+    else
+      Call FolderCreate(T5&"\"&T1)
+      Call Report.Sheets.ExportToPDF(T5&"\"&T1&"\"&T1&" "&position, False)
+    end if
+  end if
+next
+call picdelete() 
+end sub
+sub move_leftover_files()
+
+dim Fso,object_folder,folder_files
+dim fileCondition,OrignalName
+
+Set Fso = CreateObject("Scripting.filesystemobject")
+Set object_folder = Fso.GetFolder(T2)
+set folder_files = object_folder.files
+
+for each fileCondition in folder_files
+
+   OrignalName=Split(fileCondition, T2&"\", -1,vbTextCompare)
+
+    If FolderExist(T4&"\"&T1) then
+      Call FileMove(fileCondition,T4&"\"&T1&"\" & OrignalName(1))
+    else
+      Call FolderCreate(T4&"\"&T1)
+      Call FileMove(fileCondition,T4&"\"&T1&"\" & OrignalName(1))
+    end if
+  next
+  
+end sub
+
+'-------------------------- AUXILIARY  VARIABLES
+
+'L1= TR code warning used in Dialog box
+
+'R1=Rod length
+'R2=First value of Encoder rec.
+'R3=Start interval
+'R4=Floating average points
+'R5=Resampling frequecy
+'R6=Servo buffer
+'R7=Max int size
+'R8=Amount of test proccess at once
+'R9=Index where noise ends at the beggining of the record
+'R10=Index where noise starts at the ending of the record
+'R11=Wavestep
+
+'T1=TR code
+'T2=Input path
+'T3=TR_nr order
+'T4=back up path for raw data
+'T5=outpt folder for proccesed folder
+'T6=Requestor name
+
+
+'B1= EMPTY
+'B2= 1 = evaluate test as R&P | 0= as S&B
+'B3= 1 = Terminate script | 0 = Run the script Dialog box
+'B4= 1 = input folder is not empty | 0 = is empty
+
+'-------------------------- CHANGES
+'Line 187 changes from B1 to B2 6/18/2018
+
