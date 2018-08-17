@@ -4,7 +4,7 @@ Option Explicit  'Forces the explicit declaration of all the variables in a scri
 '-------------------------------------------------------------------------------
 '-- VBS script file
 '-- Created on 09/11/2017 08:05:24
-'-- Author: Juraj Wolf
+'-- Author: Juraj Wolf, Juraj.Wolf@Honeywell.com
 '-- Comment: Purpose of this makro is post-processing of data from KCTC test.
 '--          Please do not hestite to contact me in case of any error.
 '-------------------------------------------------------------------------------
@@ -19,7 +19,7 @@ call raw_data_back_up()                                   ' Moves the .tdms file
 '--------------------------------------
 '-- VBS script file
 '-- Created on 09/30/2016 11:33:05
-'-- Author: Radim Mrazek, Jaroslav Krejcí ---
+'-- Author: Radim Mrazek, Jaroslav Krejčí ---
 '-- Comment: KCTC test files batch processing ---
 '-------------------------------------------------------------------------------
 '-------------------------- DATA PROCESSING 
@@ -27,6 +27,7 @@ Call Main()                                              ' Core of the proccesin
 '------------------------------------
 '-- VBS script file
 '-- Created on 09/07/2017 16:38:17
+'-- Author: Juraj Wolf, Juraj.Wolf@Honeywell.com
 '-- Comment: Purpose of this makro is post-processing of data from KCTC test.
 '--          Please do not hestite to contact me in case of any error.
 '-------------------------------------------------------------------------------
@@ -41,8 +42,10 @@ for group_index=1 to GroupCount '
   call calculate_Spring_Force_Range(group_index)        ' Calculation of the spirng force range channel
   call calculate_Rod_Force_Range(group_index)           ' Calculation of the rod force range channel
   call calculate_Hysteresis(group_index)                ' Calculation of Force hysteresis
-  call calculate_average_forces(group_index)            ' Calculation of average rod ans spring force 
-   
+  call calculate_average_forces(group_index)            ' Calculation of average rod and preload force
+  call calculate_encoder_range(group_index)             ' Calculation of encoder range 
+  call move_encoder_average(group_index)                ' Create a moved average encoder record 
+  
 next
 
 call load_test_condition()                              ' Load test condition record .lvm
@@ -67,15 +70,28 @@ Sub introduction()
 dim Fso, object_folder,folder_files
 Call Ereasor()                                         ' clears the folder TDP and proccessed in diadem folder.
 Call Data.Root.Clear()          
-Call LoadSettingRP()                                   ' loading the settings from txt file stored in diadem folder under folder settings.
+T2="E:\Data to process"
 
-Call SUDDlgShow("Dlg1","InfoV1.2.SUD")                 ' calling the dialog box with setting and information about the test.
+Call SUDDlgShow("Input_information","InfoV1.2.SUD")                 ' calling the dialog box with setting and information about the test.
 
 if B3 then                                            
   AutoQuit()                                           ' kill the script if dialogbox is terminated 
 end if 
 
 R8=1                                                   ' Used for count the number of channels
+
+'If not(B1) and not(B2) then
+'  Call LoadSettingSB()                                 ' loading the RP settings from txt file stored in diadem folder under folder settings.
+'elseif not(B1) and B2 then
+'  Call LoadSettingRP()                                ' loading the SB settings from txt file stored in diadem folder under folder settings.
+'end if 
+
+If B2 then                                             ' Apending the test type into the variable T7, used later in report.
+  T7="Rod-end & Pin"
+else
+  T7="Shaft & Bushing"
+end if 
+
 end sub                                       ' Setting & input information
 '------------------------------------------------------- Subs and function that are used for parsing out the noise out of the record.
 sub clear_data()
@@ -201,7 +217,7 @@ for i=2 to 50000
   end if
 next
 if B2 then
-Frontmed=(maxFront+minFront)/2-0.05
+Frontmed=(maxFront+minFront)/2-0.25
 else
 Frontmed=(maxFront+minFront)/2-0.5
 end if
@@ -322,29 +338,39 @@ set socketNEWEND=data.GetChannel("[1]/NEWEndindex")
 
 for i=1 to Blackout
 
-newEND=socketEND(i)
-Do while not(abs(socketENC(newEND))<0.1 and socketENC(newEND)<socketENC(newEND+1))
-newEND=newEND+1
-loop
-socketNEWEND(i)=newEND
+  newEND=socketEND(i)
+  Do while not(abs(socketENC(newEND))<0.1 and socketENC(newEND)<socketENC(newEND+1))
+    newEND=newEND+1
+      If newEND = data.Root.ChannelGroups(1).Channels("Encoder compensated").Properties("Length").Value Then
+          Exit Do
+      End If
 
-newSTR=socketSTR(i)
-Do while not(abs(socketENC(newSTR))<0.1 and socketENC(newSTR)>socketENC(newSTR-1))
-newSTR=newSTR-1
-loop
-socketNEWSTR(i)=newSTR
-
+  loop
+  
+  socketNEWEND(i)=newEND
+  newSTR=socketSTR(i)
+  
+  Do while not(abs(socketENC(newSTR))<0.1 and socketENC(newSTR)>socketENC(newSTR-1))
+  
+    If newSTR-1 = 1 Then
+        Exit Do
+    End If
+    newSTR=newSTR-1
+    
+  loop
+  socketNEWSTR(i)=newSTR
 next
 
 end Sub                                     ' Load the proccessed data    
 Sub deleter()
 dim socketNEWSTR,socketDIF,socketENC,socketLC1,socketLC2,Blackout,i,formula_wear
 call data.Root.ChannelGroups(1).Channels.Add("Difference",DataTypeChnFloat64)
-formula_wear = "Ch(""[1]/Difference"")=Ch(""[1]/NEWEndindex"")-Ch(""[1]/NEWStartindex"")"          
+formula_wear = "Ch(""[1]/Difference"")=Ch(""[1]/NEWEndindex"")-Ch(""[1]/NEWStartindex"")"        ' with precice finder
+'formula_wear = "Ch(""[1]/Difference"")=Ch(""[1]/Endindex"")-Ch(""[1]/Startindex"")"             ' without precise finder 
 Call Calculate (formula_wear,NULL,NULL,"")
 
-
-set socketNEWSTR=data.GetChannel("[1]/NEWStartindex")
+'set socketNEWSTR=data.GetChannel("[1]/Startindex")   'without precise finder
+set socketNEWSTR=data.GetChannel("[1]/NEWStartindex") 'with precice finder
 set socketDIF=data.GetChannel("[1]/Difference")
 
 Blackout=data.Root.ChannelGroups(1).Channels("Startindex").Properties("Length").Value
@@ -356,8 +382,8 @@ next
 Call ChnDelete("[1]/FilteredSignal")
 Call ChnDelete("[1]/EventStatus")
 Call ChnDelete("[1]/Difference")
-Call ChnDelete("[1]/NEWEndindex")
-Call ChnDelete("[1]/NEWStartindex")
+Call ChnDelete("[1]/NEWEndindex")          'With precise finder
+Call ChnDelete("[1]/NEWStartindex")        'With precise finder
 Call ChnDelete("[1]/Startindex")
 Call ChnDelete("[1]/Endindex")
 
@@ -371,8 +397,53 @@ set data_folder = fso.getFolder( "C:\Diadem\Scripts\Settings" )
 
 set LogFile = fso.OpenTextFile("C:\Diadem\Scripts\Settings\RP_settings.txt", 1,False)
 
-                                                                                                                    ' Loading the data to table from txt file.
-R1= val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1))
+                                                                                                                    ' Loading the data to table from txt file.                                                                                                                   
+R1=val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1))
+R12=val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1))
+T3=Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1)
+T2=Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1)
+T4=Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1)
+T5=Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1)
+R3=val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1))
+R4=val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1)) 
+R5=val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1))
+R6=val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1))
+R7=val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1))
+LogFile.Close
+
+end sub                                      ' Load settigs for Rod-end & Pin  
+Sub LoadSettingSB()
+
+dim data_folder,fso,LogFile,WPS
+                                                                                                                    ' Making a connection with Setttings R&P
+set fso = CreateObject( "Scripting.FileSystemObject" )
+set data_folder = fso.getFolder( "C:\Diadem\Scripts\Settings" )
+
+set LogFile = fso.OpenTextFile("C:\Diadem\Scripts\Settings\SB_settings.txt", 1,False)
+
+                                                                                                                    ' Loading the data to table from txt file.                                                                                                                   
+R1=val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1))
+R12=val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1))
+WPS=val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1))
+      If WPS=1 then
+        R14= 0.081172                   'k constant in equation wear = k * angular_drift + q 
+        R15=0                           'q konstant in equation wear = k * angular_drift + q 
+      Elseif WPS=2 then
+        R14=0.099138                    'k constant in equation wear = k * angular_drift + q 
+        R15=0                           'q konstant in equation wear = k * angular_drift + q 
+      Elseif WPS=3 then
+        R14=0.115654                    'k constant in equation wear = k * angular_drift + q 
+        R15=0.000117                    'q konstant in equation wear = k * angular_drift + q 
+      Elseif WPS=4 then
+        R14=0.126215                    'k constant in equation wear = k * angular_drift + q 
+        R15=0                           'q konstant in equation wear = k * angular_drift + q 
+      Elseif WPS=5 then
+        R14=0.136416                    'k constant in equation wear = k * angular_drift + q 
+        R15=0                           'q konstant in equation wear = k * angular_drift + q 
+      Elseif WPS=6 then
+        R14=0.143482                    'k constant in equation wear = k * angular_drift + q 
+        R15=0                           'q konstant in equation wear = k * angular_drift + q 
+      End if 
 T3=Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1)
 T2=Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1)
 T4=Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1)
@@ -385,7 +456,8 @@ R7=val(Split(LogFile.ReadLine(), "=", -1,vbTextCompare)(1))
 LogFile.Close
 
 
-end sub                                      ' Load the proccessed data    
+
+end Sub                                     ' Load settigs for Shaft & Bushing
 function start_index()
 
 dim index_filter,oMyChannelList1,oMyChannelList2,OFilteredSignal,OoriginalEncoder,length_of_ENC
@@ -400,6 +472,7 @@ Call DataBlCopy(oMyChannelList1, 1,index_filter , oMyChannelList2, 1)
 Call ChnFiltCalc("[1]/Time","[1]/ToFilter","/FilteredSignal","IIR","Bessel","High pass",2,10,0,0,1.2,25,"Hamming",0,0)
 set OFilteredSignal=Data.Root.ChannelGroups(1).Channels("FilteredSignal")
 start_index=300
+
 Do while abs(OFilteredSignal(start_index))<0.1
   start_index=start_index+100
 loop
@@ -409,7 +482,7 @@ do while abs(OoriginalEncoder(start_index))>0.1
 start_index=start_index+1
 loop
 start_index=start_index-1
-end function                                   ' Load the proccessed data    
+end function                                   ' Finds the start of the clear record 
 function end_index()
 dim length_of_ENC,index_filter,index_filter2,oMyChannelList1,oMyChannelList2,OFilteredSignal,OoriginalEncoder
 
@@ -435,7 +508,7 @@ do while abs(OoriginalEncoder(end_index))>0.1
 loop
 end_index=end_index+1
 end_index=index_filter2+end_index-R9
-end function                                     ' Load the proccessed data    
+end function                                     ' Finds the end of the clear record   
 Sub raw_data_back_up()
 dim Fso,object_folder,folder_files,fileCondition,OrignalName
 
@@ -457,7 +530,7 @@ for each fileCondition in folder_files
   
 next
 
-end sub                                   ' Load the proccessed data    
+end sub                                   ' Back up raw data   
 '-------------------------- DATA PROCESSING 
 '------------------------------------------------------- Subs and function that are used for data proccesing.
 Sub Main()
@@ -718,7 +791,7 @@ end sub
 sub calculate_Hysteresis(group_index)
   dim formula_H
   Call Data.Root.ChannelGroups(group_index).Channels.Add("Hysteresis",DataTypeFloat64)
-  formula_H = "Ch(""[#1]/Hysteresis"")=Ch(""[#1]/Rod Force range"")-Ch(""[#1]/Spring Force range"")"          
+  formula_H = "Ch(""[#1]/Hysteresis"")=Ch(""[#1]/Rod Force range"")-Ch(""[#1]/Spring Force range"")*(R12/R1)"          
   formula_H = Replace(formula_H,"#1",group_index)
   Call Calculate (formula_H,NULL,NULL,"")
 end sub
@@ -747,9 +820,9 @@ Sub calculate_Wear(group_index)
   Set socket_first_value = Data.Root.ChannelGroups(group_index).Channels("ENC_SMOOTH")
   R2 = socket_first_value(1)                                                              'R2 is fist value of the encoder smooth, this value is subtract, this cause that recored starts from 0.
   if B2 then                                                                              'B2==1 then formula for Rod-end & pin B2==0 then formula for Shaft & bushing.
-    formula_wear = "Ch(""[#1]/WEAR"")=R1*Tan(Rad(Ch(""[#1]/ENC_SMOOTH"")-R2))" 
+    formula_wear = "Ch(""[#1]/WEAR"")=(R1*Tan(Rad(Ch(""[#1]/ENC_SMOOTH"")-R2)))*1000" 
   else
-    formula_wear = "Ch(""[#1]/WEAR"")=0.115653*(Ch(""[#1]/ENC_SMOOTH"")-R2)-0.000117"  
+    formula_wear = "Ch(""[#1]/WEAR"")=(R14*(Ch(""[#1]/ENC_SMOOTH"")-R2)+R15)*1000"  
   end if                      
   formula_wear = Replace(formula_wear,"#1",group_index)                                   
   Call Calculate (formula_wear,NULL,NULL,"")
@@ -760,7 +833,7 @@ Sub calculate_Wear(group_index)
   a=Data.Root.ActiveChannelGroup.Channels("RegressionY").Properties("ResultRegrCoeffA").Value                                     'Coeficient of regression y=a*x+b.
   b=Data.Root.ActiveChannelGroup.Channels("RegressionY").Properties("ResultRegrCoeffB").Value                                     'Coeficient of regression y=a*x+b.
   
-  if Not((0.01<a and a<0.1)or(-1<b and b<2)) then                                                                                 'Chceking wheter the coefficient of regression are in allowed range.
+  if Not((10<a and a<100)or(-1000<b and b<2000)) then                                                                                 'Chceking wheter the coefficient of regression are in allowed range.
      Call Data.Root.ChannelGroups(group_index).Properties.Add("CORRUPTED_WEAR","CORRUPTED WEAR")
   end if
   
@@ -772,9 +845,9 @@ Sub calculate_Wear(group_index)
   R2 = socket_first_value(2)                                                                 'R2 is fist value of the encoder mean, this value is subtract, this cause that recored starts from 0.
  
   if B2 then                                                                                 'B2==1 then formula for Rod-end & pin B2==0 then formula for Shaft & bushing.
-    formula_wear = "Ch(""[#1]/WEAR2"")=R1*Tan(Rad(Ch(""[#1]/ENC_MEAN"")-R2))"
+    formula_wear = "Ch(""[#1]/WEAR2"")=(R1*Tan(Rad(Ch(""[#1]/ENC_MEAN"")-R2)))*1000"
   else 
-    formula_wear = "Ch(""[#1]/WEAR2"")=0.115653*(Ch(""[#1]/ENC_MEAN"")-R2)-0.000117" 
+    formula_wear = "Ch(""[#1]/WEAR2"")=(R14*(Ch(""[#1]/ENC_MEAN"")-R2)+R15)*1000" 
   end if
   formula_wear = Replace(formula_wear,"#1",group_index)
   Call Calculate (formula_wear,NULL,NULL,"")
@@ -904,8 +977,56 @@ if InstrRev(final_file,".lvm") >0 Then
 next
 
 end sub
+Sub calculate_encoder_range(group_index)
+dim formula_enc_range
+  Call Data.Root.ChannelGroups(group_index).Channels.Add("Angle_range",DataTypeFloat64)
+  formula_enc_range = "Ch(""[#1]/Angle_range"")=Abs(Ch(""[#1]/ENC_EUP"")-Ch(""[#1]/ENC_ELOW""))"          
+  formula_enc_range = Replace(formula_enc_range,"#1",group_index)
+  Call Calculate (formula_enc_range,NULL,NULL,"")
+end sub
+Sub move_encoder_average(group_index)
+
+  dim socket_first_value
+  dim formula_ENC_moved            
+  
+  Call Data.Root.ChannelGroups(group_index).Channels.Add("ENC_SMOOTH_moved",DataTypeFloat64) 'Creating a channel, the wear is calculated form ENC_SMOOTH.                         
+  Set socket_first_value = Data.Root.ChannelGroups(group_index).Channels("ENC_SMOOTH")
+  R13 = socket_first_value(1)                                                                'R3 is fist value of the encoder smooth, this value is subtract, this cause that recored starts from 0.                                                                       
+  formula_ENC_moved = "Ch(""[#1]/ENC_SMOOTH_moved"")=Ch(""[#1]/ENC_SMOOTH"")-R13"
+  formula_ENC_moved = Replace(formula_ENC_moved,"#1",group_index)
+  Call Calculate (formula_ENC_moved,NULL,NULL,"")
+  
+end sub
+
 '-------------------------- REPORT
-'------------------------------------------------------- Subs and function that are used for report creation.                                       
+'------------------------------------------------------- Subs and function that are used for report creation.   
+Sub add_picture_prop()
+  dim fso,folder_files,line
+  
+  set fso = CreateObject( "Scripting.FileSystemObject" )
+  set folder_files = fso.OpenTextFile("C:\Diadem\Scripts\Settings\PICTURES&RUN_NAME.txt", 1,False)
+  
+  folder_files.Readline()
+  if folder_files.AtEndOfStream = False then
+  
+    do while folder_files.AtEndOfStream <> True
+    
+      line=split(folder_files.Readline(),"=#=")
+
+      
+      if IDx(line(0),"TV")>0 then
+        if Data.Root.ChannelGroups(line(0)).Properties.Exists("Picture")=false then
+            Call Data.Root.ChannelGroups(line(0)).Properties.Add("Picture",line(1))
+        else
+            Data.Root.ChannelGroups(line(0)).Properties("Picture").Value=line(1)
+        end if 
+      end if    
+      
+    loop
+    
+  end if
+  
+  end sub
 Sub comment(variable,X1,Y1,X2,Y2,Bold,Size,Text,Color)
       Set variable = Report.ActiveSheet.Objects.Add(eReportObjectComment,variable)
       variable.Position.ByCoordinate.X1 = X1
@@ -924,79 +1045,6 @@ Sub comment(variable,X1,Y1,X2,Y2,Bold,Size,Text,Color)
       Call variable.Comment.BorderLine.Color.SetPredefinedColor(eColorIndexNone)
       Call variable.Position.ZOrder.MoveToForeground()
 end Sub                                         
-Sub create_report_table()
-  dim TRtable,trTroubletable,number,lvmfile,trTroubletable1
-  
-  Set TRtable=Report.ActiveSheet.Objects.Add(eReportObject2DTable,"TRtable")
-  
-  TRtable.Position.ByBorder.Top=34
-  TRtable.Position.ByBorder.Left=5
-  TRtable.Position.ByBorder.Right=5
-  TRtable.Position.ByBorder.Bottom=50
-  TRtable.Settings.UseAutoFontSize=0
-  TRtable.Settings.BorderLineColor.ColorIndex=eColorIndexNone
-  TRtable.Settings.UseYDoubleLine=0
-  TRtable.Settings.Header.Alignment=e2DTableAlignmentCentric
-  TRtable.Settings.Header.Height=12
-  TRtable.Settings.IndexSettings.IndexMode=e2DTableIndexModeAutomaticMinimum
-
-  set trTroubletable=TRtable.Columns.Add(e2DTableColumnText)
-  trTroubletable.TextList.Count=1
-  trTroubletable.TextList(1).Text=Data.Root.ChannelGroups(1).Properties("Name").Value
-  trTroubletable.Settings.Header.IndividualTitle.Title1="Sample"
-  trTroubletable.Settings.Font.Name="Calibri"
-  trTroubletable.Settings.Font.Size=2.3
-  trTroubletable.Settings.Header.IndividualSettings.Enable=True
-  trTroubletable.Settings.Header.IndividualSettings.Font.Size=2.5
-  trTroubletable.Settings.Header.IndividualSettings.Alignment=e2DTableAlignmentCentric
-  trTroubletable.Settings.Header.IndividualSettings.Font.Name="Calibri"
-  
-  number=Data.Root.ChannelGroups(1).Properties("Name").Value
-  lvmfile=Data.Root.ChannelGroups.Exists("Condition "&number)
-  
-  
-  set trTroubletable1=TRtable.Columns.Add(e2DTableColumnText)
-  trTroubletable1.TextList.Count=1
-  if lvmfile then
-  trTroubletable1.TextList(1).Text=Data.Root.ChannelGroups("Condition "&number).Channels("Setpoint temperature [°C]").Properties("Maximum").Value
-  else
-  trTroubletable1.TextList(1).Text="-"
-  end if
-  trTroubletable1.Settings.Header.IndividualTitle.Title1="Temperature [°C]"
-  trTroubletable1.Settings.Font.Name="Calibri"
-  trTroubletable1.Settings.Font.Size=2.3
-  trTroubletable1.Settings.Header.IndividualSettings.Enable=True
-  trTroubletable1.Settings.Header.IndividualSettings.Font.Size=2.5
-  trTroubletable1.Settings.Header.IndividualSettings.Alignment=e2DTableAlignmentCentric
-  trTroubletable1.Settings.Header.IndividualSettings.Font.Name="Calibri"
-  
-  set trTroubletable1=TRtable.Columns.Add(e2DTableColumnText)
-  trTroubletable1.TextList.Count=1
-  if lvmfile then
-  trTroubletable1.TextList(1).Text=Data.Root.ChannelGroups("Condition "&number).Channels("Setpoint servo [RPM]").Properties("Maximum").Value
-  else
-   trTroubletable1.TextList(1).Text="-"
-  end if 
-  trTroubletable1.Settings.Header.IndividualTitle.Title1="Servo speed[RPM]"
-  trTroubletable1.Settings.Font.Name="Calibri"
-  trTroubletable1.Settings.Font.Size=2.3
-  trTroubletable1.Settings.Header.IndividualSettings.Enable=True
-  trTroubletable1.Settings.Header.IndividualSettings.Font.Size=2.5
-  trTroubletable1.Settings.Header.IndividualSettings.Alignment=e2DTableAlignmentCentric
-  trTroubletable1.Settings.Header.IndividualSettings.Font.Name="Calibri"
-
-  set trTroubletable1=TRtable.Columns.Add(e2DTableColumnText)
-  trTroubletable1.TextList.Count=1
-  trTroubletable1.TextList(1).Text=round(Data.Root.ChannelGroups(1).Channels("X_COMH").Properties("Maximum").Value)
-  trTroubletable1.Settings.Header.IndividualTitle.Title1="Duration[h]"
-  trTroubletable1.Settings.Font.Name="Calibri"
-  trTroubletable1.Settings.Font.Size=2.3
-  trTroubletable1.Settings.Header.IndividualSettings.Enable=True
-  trTroubletable1.Settings.Header.IndividualSettings.Font.Size=2.5
-  trTroubletable1.Settings.Header.IndividualSettings.Alignment=e2DTableAlignmentCentric
-  trTroubletable1.Settings.Header.IndividualSettings.Font.Name="Calibri"
-
-  end sub
 sub parameter_control()
   
   'This Sub is resposible for generating the error message if: -average test temperature is out the range of the setpoint temperature 
@@ -1047,7 +1095,7 @@ sub parameter_control()
       
     if tp or at or cwl then
         
-  call comment("Warnings",0,16,100,27,1,2.2,"Warnings:"&average_temperature&temperature_peak&corupted_wear_lvm,eColorIndexRed)
+  call comment("Warnings",0,50,100,60,1,2.2,"Warnings:"&average_temperature&temperature_peak&corupted_wear_lvm,eColorIndexRed)
    end if     
   end if 
   
@@ -1055,27 +1103,29 @@ end sub
 Sub create_report()
 
 dim i, position
+
+Call add_picture_prop()
+
 for i=1 to Groupcount
 
   if checkin(Data.Root.ChannelGroups(i).Properties("Name").Value) then
   
-          position=Data.Root.ChannelGroups(i).Properties("Name").Value
-          Call Data.Move(Data.Root.ChannelGroups(i),Data.Root.ChannelGroups,1)                  'move the exact run at first place in treee and than make a report
-          Call ChnRenumber()
-          call picdelete()                                                                      'delete the previous report
-          Call PicLoad("TemplateForReport")
-          Call Report.Sheets("Front Page").Activate                                             'save the front page active so u can create the table and run title  
-          call comment("RunTitle"&i,0,76,100,83,1,5,Data.Root.ChannelGroups(1).Properties("Name").Value,eColorIndexBlack)
-          
+    position=Data.Root.ChannelGroups(i).Properties("Name").Value
+    Call Data.Move(Data.Root.ChannelGroups(i),Data.Root.ChannelGroups,1)                  'move the exact run at first place in treee and than make a report
+    Call ChnRenumber()
+    call picdelete()                                                                      'delete the previous report
+    Call PicLoad("TemplateForReportV-6")
+    Call Report.Sheets("Front Page").Activate                                             'save the front page active so u can create the table and run title  
+        
     Call ChnLinGen("[1]/LinTime1"&i,0,data.Root.ChannelGroups(1).Channels("X_COMH").Properties("Maximum").Value,data.Root.ChannelGroups(1).Channels("Actual temperature [°C]").Properties("Length").Value)
     Call ChnLinGen("[1]/LinTime2"&i,0,data.Root.ChannelGroups(1).Channels("X_COMH").Properties("Maximum").Value,data.Root.ChannelGroups(1).Channels("Setpoint servo [RPM]").Properties("Length").Value)
     Call ChnRenumber()
     
-    Call Create_report_table()
-  
     Call parameter_control()
    
     Call report.Refresh()
+    
+   Call Add_picture() 
 
   if report.Sheets.Exists("Sheet 1") then                                                'deleting first page if exist.
     call GraphSheetdelete("Sheet 1")
@@ -1114,13 +1164,33 @@ for each fileCondition in folder_files
   next
   
 end sub
+Sub Add_picture()  
+
+  if Data.Root.ChannelGroups(1).Properties.Exists("Picture") then
+    Call Report.Sheets("Control").Activate
+  
+    Call GraphObjNew("FreeGraph","Picture")
+    Call GraphObjOpen("Picture")
+    
+    MtaFileName      = Data.Root.ChannelGroups(1).Properties("Picture").Value
+    MtaRatioAdapt    = 0
+    MtaRelPos        = "r-top"  
+    MtaWidth         = 82
+    MtaHeight        = 29     
+    MtaPosX          = 10
+    MtaPosY          = 5
+    Call GraphObjClose("Picture")
+    Call PicUpdate
+  end if 
+
+end sub  
 
 '-------------------------- AUXILIARY  VARIABLES
 
 'L1= TR code warning used in Dialog box
 
-'R1=Rod length
-'R2=First value of Encoder rec.
+'R1=Crank external length
+'R2=First value of wear rec.
 'R3=Start interval
 'R4=Floating average points
 'R5=Resampling frequecy
@@ -1130,6 +1200,10 @@ end sub
 'R9=Index where noise ends at the beggining of the record
 'R10=Index where noise starts at the ending of the record
 'R11=Wavestep
+'R12=Crank spring length
+'R13=First value of encoder record rec.
+'R14=k constant in equation wear = k * angular_drift + q 
+'R15=q konstant in equation wear = k * angular_drift + q 
 
 'T1=TR code
 'T2=Input path
@@ -1137,12 +1211,16 @@ end sub
 'T4=back up path for raw data
 'T5=outpt folder for proccesed folder
 'T6=Requestor name
+'T7=Type of the test
+'T8=Name of the department
+'T9=fuuuck variable
 
-
-'B1= EMPTY
+'B1= 1 = setting has been changed by user  | 0= hasn't changed
 'B2= 1 = evaluate test as R&P | 0= as S&B
 'B3= 1 = Terminate script | 0 = Run the script Dialog box
 'B4= 1 = input folder is not empty | 0 = is empty
+
+'TV=List of the record with names
 
 '-------------------------- CHANGES
 'Line 187 changes from B1 to B2 6/18/2018
