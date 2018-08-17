@@ -4,7 +4,7 @@ Option Explicit  'Forces the explicit declaration of all the variables in a scri
 '-------------------------------------------------------------------------------
 '-- VBS script file
 '-- Created on 09/11/2017 08:05:24
-'-- Author: Juraj Wolf, Juraj.Wolf@Honeywell.com
+'-- Author: Juraj Wolf
 '-- Comment: Purpose of this makro is post-processing of data from KCTC test.
 '--          Please do not hestite to contact me in case of any error.
 '-------------------------------------------------------------------------------
